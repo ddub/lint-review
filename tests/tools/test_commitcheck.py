@@ -4,6 +4,7 @@ from lintreview.review import IssueComment
 from lintreview.tools.commitcheck import Commitcheck
 from nose.tools import eq_
 from unittest import TestCase
+import responses
 
 
 class TestCommitCheck(TestCase):
@@ -39,7 +40,7 @@ class TestCommitCheck(TestCase):
         self.tool.execute_commits(self.fixture_data)
         eq_(1, len(self.problems), 'Commits that do not match cause errors')
         msg = (
-            'The following commits had issues. '
+            'The following commits had issues.\n'
             'The pattern \d+ was not found in:\n'
             '* 6dcb09b5b57875f334f61aebed695e2e4193db5e\n')
         expected = IssueComment(msg)
@@ -50,7 +51,51 @@ class TestCommitCheck(TestCase):
         self.tool.options['message'] = 'You are bad.'
         self.tool.execute_commits(self.fixture_data)
         eq_(1, len(self.problems), 'Commits that do not match cause errors')
-        msg = ('You are bad. The pattern \d+ was not found in:\n'
+        msg = ('You are bad.\nThe pattern \d+ was not found in:\n'
                '* 6dcb09b5b57875f334f61aebed695e2e4193db5e\n')
         expected = IssueComment(msg)
         eq_(expected, self.problems.all()[0])
+
+    @responses.activate
+    def test_valid_url(self):
+        responses.add(responses.GET, 'https://example.com/bugs', status=200)
+        self.tool.options['pattern'] = '(bugs)'
+        self.tool.options['check_url'] = 'https://example.com/{0}'
+        self.tool.execute_commits(self.fixture_data)
+        eq_(1, len(responses.calls), 'Valid URL is only checked once')
+        eq_(0, len(self.problems), 'Valid 200 response with simple format')
+
+    @responses.activate
+    def test_valid_url_from_dictionary(self):
+        responses.add(responses.GET, 'https://example.com/all', status=200)
+        self.tool.options['pattern'] = '(\w+) (?P<ticket>\w+)'
+        self.tool.options['check_url'] = 'https://example.com/{ticket}'
+        self.tool.execute_commits(self.fixture_data)
+        print('Calls '+str(len(responses.calls)))
+        eq_(1, len(responses.calls), 'Valid URL is only checked once')
+        eq_(0, len(self.problems), 'Valid 200 response with dictionary format')
+
+    @responses.activate
+    def test_invalid_url(self):
+        responses.add(responses.GET, 'https://example.com/all', status=404)
+        self.tool.options['pattern'] = '(\w+) (?P<ticket>\w+)'
+        self.tool.options['check_url'] = 'https://example.com/{ticket}'
+        self.tool.execute_commits(self.fixture_data)
+        eq_(1, len(responses.calls), 'URL is only checked once')
+        eq_(1, len(self.problems), 'Commits that do not match cause errors')
+        msg = ('The following commits had issues.\n' +
+               'These commits did not return a 200 response:\n' +
+               '* 6dcb09b5b57875f334f61aebed695e2e4193db5e' +
+               ' requested https://example.com/all and got a 404 response\n')
+        expected = IssueComment(msg)
+        eq_(expected, self.problems.all()[0])
+
+    @responses.activate
+    def test_good_url(self):
+        fixture = load_fixture('commits-2.json')
+        self.fixture_data = create_commits(fixture)
+        responses.add(responses.GET, 'https://example.com/all', status=200)
+        self.tool.options['pattern'] = '(\w+) (?P<ticket>\w+)'
+        self.tool.options['check_url'] = 'https://example.com/{ticket}'
+        self.tool.execute_commits(self.fixture_data)
+        eq_(1, len(responses.calls), 'Valid URL is only checked once')
